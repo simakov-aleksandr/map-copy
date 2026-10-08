@@ -46,7 +46,8 @@
   .pop h3 { margin: 0 0 2px; font-size: 15px; }
   .pop .cat-name { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
   .pop p { white-space: pre-line; margin: 6px 0; }
-  .pop img { width: 100%; border-radius: 6px; margin-top: 6px; display: block; }
+  /* Фиксированные пропорции: высота попапа известна до загрузки фото, и MapLibre сразу выбирает, куда его поставить. */
+  .pop img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 6px; margin-top: 6px; display: block; }
   .pop label { display: flex; gap: 6px; align-items: center; margin-top: 8px; cursor: pointer; }
   #error { padding: 24px; }
   @media (max-width: 700px) {
