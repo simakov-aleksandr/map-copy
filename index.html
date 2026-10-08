@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Map Copy</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<style>
+  :root {
+    --bg: #f6f6f4; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
+    --border: #e2e2dd; --accent: #2f6fdb; --hover: #efefeb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #151514; --panel: #1f1f1d; --text: #ececea; --muted: #9a9a94;
+      --border: #33332f; --accent: #6b9cf0; --hover: #2a2a27;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #151514; --panel: #1f1f1d; --text: #ececea; --muted: #9a9a94;
+    --border: #33332f; --accent: #6b9cf0; --hover: #2a2a27;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, -apple-system, sans-serif; display: flex; }
+  #map { flex: 1; height: 100%; }
+  #panel { width: 300px; height: 100%; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--border); padding: 12px 16px; }
+  #panel h1 { font-size: 16px; margin: 0 0 2px; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+  .row { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+  select { flex: 1; padding: 4px; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; }
+  button { padding: 4px 8px; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; }
+  button:hover { background: var(--hover); }
+  .group { margin-top: 12px; }
+  .group-title { display: flex; justify-content: space-between; align-items: center; font-weight: 600; cursor: pointer; padding: 4px 0; border-bottom: 1px solid var(--border); }
+  .cat { display: flex; align-items: center; gap: 6px; padding: 3px 4px; border-radius: 6px; cursor: pointer; user-select: none; }
+  .cat:hover { background: var(--hover); }
+  .cat.off { opacity: .4; }
+  .cat .n { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .icon { width: 17px; height: 22px; flex: none; background-repeat: no-repeat; }
+  #toggle { display: none; }
+  .maplibregl-popup-content { background: var(--panel); color: var(--text); max-width: 320px; padding: 12px 14px; }
+  .maplibregl-popup-tip { border-top-color: var(--panel) !important; border-bottom-color: var(--panel) !important; }
+  .maplibregl-popup-close-button { color: var(--text); }
+  .pop h3 { margin: 0 0 2px; font-size: 15px; }
+  .pop .cat-name { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+  .pop p { white-space: pre-line; margin: 6px 0; }
+  .pop img { width: 100%; border-radius: 6px; margin-top: 6px; display: block; }
+  .pop label { display: flex; gap: 6px; align-items: center; margin-top: 8px; cursor: pointer; }
+  #error { padding: 24px; }
+  @media (max-width: 700px) {
+    #panel { position: absolute; z-index: 2; left: 0; top: 0; width: min(300px, 85vw); transform: translateX(-100%); transition: transform .2s; }
+    body.panel-open #panel { transform: none; }
+    #toggle { display: block; position: absolute; z-index: 3; top: 10px; left: 10px; }
+    body.panel-open #toggle { left: calc(min(300px, 85vw) + 10px); }
+  }
+</style>
+</head>
+<body>
+<button id="toggle" aria-label="Фильтры">☰</button>
+<aside id="panel"></aside>
+<div id="map"></div>
+<script>
+const DEFAULT_MAP = "forza-horizon-6/japan";
+const mapPath = new URLSearchParams(location.search).get("map") || DEFAULT_MAP;
+const base = new URL(`snapshots/${mapPath}/`, location.href).href;
+const storeKey = `map-copy:${mapPath}`;
+
+function loadState() {
+  try { return JSON.parse(localStorage.getItem(storeKey)) || {}; } catch { return {}; }
+}
+function saveState() {
+  try { localStorage.setItem(storeKey, JSON.stringify(state)); } catch {}
+}
+const state = Object.assign({ found: [], hidden: [], hideFound: false, tileSet: null }, loadState());
+const found = new Set(state.found);
+const hidden = new Set(state.hidden);
+
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") node.className = v;
+    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v);
+  }
+  node.append(...children);
+  return node;
+}
+
+// Описания MapGenie — markdown: **жирный** и [ссылки](url). Собираем DOM-узлы, без innerHTML.
+function renderMarkdown(text) {
+  const nodes = [];
+  const re = /\*\*(.+?)\*\*|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g;
+  let last = 0, m;
+  while ((m = re.exec(text))) {
+    nodes.push(text.slice(last, m.index));
+    nodes.push(m[1] !== undefined
+      ? el("strong", {}, m[1])
+      : el("a", { href: m[3], target: "_blank", rel: "noopener noreferrer" }, m[2]));
+    last = re.lastIndex;
+  }
+  nodes.push(text.slice(last));
+  return nodes;
+}
+
+async function main() {
+  const [snap, sprite] = await Promise.all([
+    fetch(base + "snapshot.json").then(r => { if (!r.ok) throw new Error(`Нет копии ${mapPath}`); return r.json(); }),
+    fetch(base + "sprite/markers.json").then(r => r.ok ? r.json() : {}),
+  ]);
+  document.title = `${snap.map.title} · ${snap.game.title}`;
+
+  const categories = new Map();
+  for (const g of snap.groups) for (const c of g.categories) categories.set(c.id, c);
+  const counts = new Map();
+  for (const loc of snap.locations) counts.set(loc.category_id, (counts.get(loc.category_id) || 0) + 1);
+
+  const tileSet = snap.tile_sets.find(t => t.slug === state.tileSet) || snap.tile_sets[0];
+  const [w, s, e, n] = snap.bounds;
+  const padX = (e - w) * 0.1, padY = (n - s) * 0.1;
+  const sources = {
+    locations: {
+      type: "geojson",
+      promoteId: "id",
+      data: {
+        type: "FeatureCollection",
+        features: snap.locations.map(loc => ({
+          type: "Feature",
+          geometry: { type: "Point", coordinates: [loc.lng, loc.lat] },
+          properties: { id: loc.id, category_id: loc.category_id, icon: categories.get(loc.category_id)?.icon || "" },
+        })),
+      },
+    },
+  };
+  const layers = [{ id: "bg", type: "background", paint: { "background-color": "#000" } }];
+  for (const t of snap.tile_sets) {
+    sources[`tiles-${t.slug}`] = {
+      type: "raster",
+      tiles: [`${base}tiles/${t.slug}/{z}/{y}/{x}.${t.extension}`],
+      tileSize: 256,
+      minzoom: t.min_zoom,
+      maxzoom: t.tiles_max_zoom,
+      bounds: [w - padX, s - padY, e + padX, n + padY],
+    };
+    layers.push({
+      id: `tiles-${t.slug}`, type: "raster", source: `tiles-${t.slug}`,
+      layout: { visibility: t === tileSet ? "visible" : "none" },
+    });
+  }
+  layers.push({
+    id: "locations", type: "symbol", source: "locations",
+    layout: { "icon-image": ["get", "icon"], "icon-anchor": "bottom", "icon-allow-overlap": true, "icon-size": 0.9 },
+    paint: { "icon-opacity": ["case", ["boolean", ["feature-state", "found"], false], 0.35, 1] },
+  });
+
+  const map = new maplibregl.Map({
+    container: "map",
+    style: { version: 8, sprite: base + "sprite/markers", sources, layers },
+    center: snap.view.center,
+    zoom: snap.view.zoom,
+    minZoom: Math.max(0, Math.min(...snap.tile_sets.map(t => t.min_zoom)) - 1),
+    maxZoom: Math.max(...snap.tile_sets.map(t => t.max_zoom)),
+    maxBounds: [w - padX * 3, s - padY * 3, e + padX * 3, n + padY * 3],
+    renderWorldCopies: false,
+    attributionControl: { compact: true, customAttribution: `Данные: <a href="${snap.source}">MapGenie</a>` },
+  });
+  map.addControl(new maplibregl.NavigationControl({ showCompass: false }));
+
+  function applyFilter() {
+    const ids = [...found].map(Number);
+    const visibleCats = [...categories.keys()].filter(id => !hidden.has(id));
+    const filter = ["all", ["in", ["get", "category_id"], ["literal", visibleCats]]];
+    if (state.hideFound) filter.push(["!", ["in", ["get", "id"], ["literal", ids]]]);
+    map.setFilter("locations", filter);
+  }
+  function setFound(id, value) {
+    value ? found.add(id) : found.delete(id);
+    state.found = [...found];
+    saveState();
+    map.setFeatureState({ source: "locations", id }, { found: value });
+    applyFilter();
+    renderFoundCounter();
+  }
+
+  // Панель
+  const panel = document.getElementById("panel");
+  const foundCounter = el("div", { class: "sub" });
+  function renderFoundCounter() {
+    foundCounter.textContent = `Найдено ${found.size} из ${snap.locations.length}`;
+  }
+  panel.append(
+    el("h1", {}, snap.map.title),
+    el("div", { class: "sub" }, snap.game.title),
+    foundCounter,
+  );
+  if (snap.tile_sets.length > 1) {
+    const select = el("select", {
+      onchange: ev => {
+        for (const t of snap.tile_sets) map.setLayoutProperty(`tiles-${t.slug}`, "visibility", t.slug === ev.target.value ? "visible" : "none");
+        state.tileSet = ev.target.value;
+        saveState();
+      },
+    }, ...snap.tile_sets.map(t => el("option", { value: t.slug }, t.name)));
+    select.value = tileSet.slug;
+    panel.append(el("div", { class: "row" }, "Подложка", select));
+  }
+  const hideFoundBox = el("input", { type: "checkbox", onchange: ev => { state.hideFound = ev.target.checked; saveState(); applyFilter(); } });
+  hideFoundBox.checked = state.hideFound;
+  panel.append(
+    el("label", { class: "row" }, hideFoundBox, "Скрыть найденные"),
+    el("div", { class: "row" },
+      el("button", { onclick: () => setAll(false) }, "Показать все"),
+      el("button", { onclick: () => setAll(true) }, "Скрыть все")),
+  );
+
+  const catRows = new Map();
+  function renderCat(id) {
+    catRows.get(id).classList.toggle("off", hidden.has(id));
+  }
+  function setCats(ids, hide) {
+    for (const id of ids) { hide ? hidden.add(id) : hidden.delete(id); renderCat(id); }
+    state.hidden = [...hidden];
+    saveState();
+    applyFilter();
+  }
+  function setAll(hide) { setCats([...categories.keys()], hide); }
+
+  function iconEl(name) {
+    const span = el("span", { class: "icon" });
+    const s = sprite[name];
+    if (s) {
+      const scale = 22 / s.height;
+      span.style.backgroundImage = `url(${base}sprite/markers.png)`;
+      span.style.backgroundPosition = `${-s.x * scale}px ${-s.y * scale}px`;
+      const sheetW = Math.max(...Object.values(sprite).map(v => v.x + v.width));
+      const sheetH = Math.max(...Object.values(sprite).map(v => v.y + v.height));
+      span.style.backgroundSize = `${sheetW * scale}px ${sheetH * scale}px`;
+      span.style.width = `${s.width * scale}px`;
+    }
+    return span;
+  }
+
+  for (const g of snap.groups) {
+    const cats = g.categories.filter(c => counts.has(c.id));
+    if (!cats.length) continue;
+    const ids = cats.map(c => c.id);
+    const box = el("div", { class: "group" },
+      el("div", { class: "group-title", onclick: () => setCats(ids, ids.some(id => !hidden.has(id))) },
+        g.title, el("span", { class: "sub", style: "margin:0" }, "вкл/выкл")));
+    for (const c of cats) {
+      const row = el("div", { class: "cat", onclick: () => setCats([c.id], !hidden.has(c.id)) },
+        iconEl(c.icon), c.title, el("span", { class: "n" }, String(counts.get(c.id))));
+      catRows.set(c.id, row);
+      box.append(row);
+      renderCat(c.id);
+    }
+    panel.append(box);
+  }
+  renderFoundCounter();
+
+  document.getElementById("toggle").addEventListener("click", () => document.body.classList.toggle("panel-open"));
+
+  // Карта
+  const byId = new Map(snap.locations.map(l => [l.id, l]));
+  map.on("load", () => {
+    for (const id of found) map.setFeatureState({ source: "locations", id }, { found: true });
+    applyFilter();
+  });
+  map.on("mouseenter", "locations", () => { map.getCanvas().style.cursor = "pointer"; });
+  map.on("mouseleave", "locations", () => { map.getCanvas().style.cursor = ""; });
+  map.on("click", "locations", ev => {
+    const loc = byId.get(ev.features[0].properties.id);
+    const box = el("input", { type: "checkbox", onchange: e2 => setFound(loc.id, e2.target.checked) });
+    box.checked = found.has(loc.id);
+    const content = el("div", { class: "pop" },
+      el("h3", {}, loc.title || "Без названия"),
+      el("div", { class: "cat-name" }, categories.get(loc.category_id)?.title || ""));
+    if (loc.description) content.append(el("p", {}, ...renderMarkdown(loc.description)));
+    for (const m of loc.media) {
+      // Фото есть только в локальной копии, скачанной с --with-media.
+      const img = el("img", { src: `${base}media/${m.file}`, alt: m.title || "", loading: "lazy" });
+      img.addEventListener("error", () => img.remove());
+      content.append(img);
+    }
+    content.append(el("label", {}, box, "Найдено"));
+    new maplibregl.Popup({ offset: [0, -30], maxWidth: "340px" })
+      .setLngLat([loc.lng, loc.lat]).setDOMContent(content).addTo(map);
+  });
+}
+
+main().catch(err => {
+  document.body.replaceChildren(el("div", { id: "error" }, `Не удалось открыть карту: ${err.message}`));
+});
+</script>
+</body>
+</html>

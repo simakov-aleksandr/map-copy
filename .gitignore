@@ -218,3 +218,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# IDE
+.idea/
+
+# Копии карт: в git только та, что публикуется на Pages, и без фото
+snapshots/*/
+!snapshots/forza-horizon-6/
+snapshots/forza-horizon-6/*/
+!snapshots/forza-horizon-6/japan/
+snapshots/**/media/
+*.part
