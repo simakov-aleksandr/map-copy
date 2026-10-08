@@ -222,10 +222,9 @@ __marimo__/
 # IDE
 .idea/
 
-# Копии карт: в git только та, что публикуется на Pages, и без фото
+# Копии карт: в git только та, что публикуется на Pages
 snapshots/*/
 !snapshots/forza-horizon-6/
 snapshots/forza-horizon-6/*/
 !snapshots/forza-horizon-6/japan/
-snapshots/**/media/
 *.part
